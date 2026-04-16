@@ -2,6 +2,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse, urlunparse
 
 from dotenv import load_dotenv
 
@@ -20,6 +21,24 @@ def _parse_admin_ids(raw: str) -> frozenset[int]:
         if part.isdigit():
             out.add(int(part))
     return frozenset(out)
+
+
+def _normalize_webhook_url(url: str) -> tuple[str, str]:
+    """Возвращает (полный URL для setWebhook, path для aiohttp)."""
+    u = urlparse(url.strip())
+    if u.scheme not in ("https", "http"):
+        raise RuntimeError(
+            "WEBHOOK_URL должен начинаться с https:// или http:// (для продакшена нужен https)."
+        )
+    if not u.netloc:
+        raise RuntimeError(
+            "WEBHOOK_URL: укажите хост, например https://mybot.onrender.com/webhook"
+        )
+    path = u.path or "/webhook"
+    if path == "/":
+        path = "/webhook"
+    full = urlunparse((u.scheme, u.netloc, path, "", "", ""))
+    return full, path
 
 
 def _collect_admin_telegram_ids() -> frozenset[int]:
@@ -52,6 +71,11 @@ class Settings:
     events_sync_enabled: bool = True
     events_sync_interval_hours: int = 12
     events_fetch_days: int = 2
+    use_webhook: bool = False
+    webhook_url: str | None = None
+    webhook_path: str = "/webhook"
+    webhook_secret: str | None = None
+    webhook_port: int = 8080
 
 
 def load_settings() -> Settings:
@@ -92,6 +116,52 @@ def load_settings() -> Settings:
     if ev_days < 1:
         ev_days = 2
 
+    webhook_url_raw = os.getenv("WEBHOOK_URL", "").strip()
+    webhook_secret = os.getenv("WEBHOOK_SECRET", "").strip() or None
+
+    # Локальная разработка: polling даже если в .env остался старый WEBHOOK_URL
+    use_polling_override = os.getenv("USE_POLLING", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+    port_str = os.getenv("PORT", "8080").strip()
+    try:
+        webhook_port = int(port_str)
+    except ValueError:
+        webhook_port = 8080
+    if webhook_port < 1 or webhook_port > 65535:
+        webhook_port = 8080
+
+    use_webhook = False
+    webhook_url: str | None = None
+    webhook_path = "/webhook"
+    if webhook_url_raw and not use_polling_override:
+        webhook_url, webhook_path = _normalize_webhook_url(webhook_url_raw)
+        use_webhook = True
+
+    _is_render = os.getenv("RENDER", "").strip().lower() in ("true", "1", "yes")
+    if _is_render and use_polling_override:
+        raise RuntimeError(
+            "На Render нельзя USE_POLLING=1: нужен webhook и ответ на HTTP (health check). "
+            "Уберите USE_POLLING и задайте WEBHOOK_URL."
+        )
+    if _is_render and not use_webhook:
+        raise RuntimeError(
+            "На Render нужен webhook: задайте в переменных окружения WEBHOOK_URL вида "
+            "https://<имя-сервиса>.onrender.com/webhook (HTTPS). "
+            "PORT задаёт Render сам — слушаем его в приложении. "
+            "Для локального polling задайте USE_POLLING=1 и не используйте RENDER=true."
+        )
+    if _is_render and webhook_url is not None and not str(webhook_url).lower().startswith(
+        "https://"
+    ):
+        raise RuntimeError(
+            "На Render WEBHOOK_URL должен быть с https:// (Telegram принимает только HTTPS в продакшене)."
+        )
+
     return Settings(
         bot_token=token,
         database_url=database_url,
@@ -102,4 +172,9 @@ def load_settings() -> Settings:
         events_sync_enabled=events_sync_enabled,
         events_sync_interval_hours=ev_hours,
         events_fetch_days=ev_days,
+        use_webhook=use_webhook,
+        webhook_url=webhook_url,
+        webhook_path=webhook_path,
+        webhook_secret=webhook_secret,
+        webhook_port=webhook_port,
     )

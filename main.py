@@ -5,12 +5,14 @@ import logging
 import sys
 from logging.handlers import RotatingFileHandler
 
+from aiohttp import web
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
-from config import load_settings
+from config import Settings, load_settings
 from database.db import Database
 from handlers import setup_routers
 from middlewares import AdminMiddleware, CerebrasMiddleware, DatabaseMiddleware, LoggingMiddleware
@@ -98,8 +100,6 @@ async def main() -> None:
             interval_sec,
             interval_sec / 3600,
         )
-        # Парсинг мероприятий при старте бота не выполняем — только по расписанию
-        # (после первой паузы) или вручную: команда /sync_events у администратора.
         while True:
             await asyncio.sleep(interval_sec)
             try:
@@ -108,9 +108,39 @@ async def main() -> None:
             except Exception:
                 log.exception("Ошибка синхронизации мероприятий из соцсетей")
 
-    events_task = asyncio.create_task(social_events_background())
+    if settings.use_webhook:
+        assert settings.webhook_url is not None
+        await _run_webhook(
+            bot=bot,
+            dp=dp,
+            settings=settings,
+            cerebras_service=cerebras_service,
+            db=db,
+            social_events_background=social_events_background,
+            log=log,
+        )
+    else:
+        await _run_polling(
+            bot=bot,
+            dp=dp,
+            cerebras_service=cerebras_service,
+            db=db,
+            social_events_background=social_events_background,
+            log=log,
+        )
 
-    log.info("Бот запущен")
+
+async def _run_polling(
+    *,
+    bot: Bot,
+    dp: Dispatcher,
+    cerebras_service: CerebrasService | None,
+    db: Database,
+    social_events_background,
+    log: logging.Logger,
+) -> None:
+    events_task = asyncio.create_task(social_events_background())
+    log.info("Режим polling (для webhook задайте WEBHOOK_URL в .env)")
     try:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
@@ -119,6 +149,84 @@ async def main() -> None:
             await events_task
         except asyncio.CancelledError:
             pass
+        if cerebras_service is not None:
+            await cerebras_service.close()
+        await db.close()
+        await bot.session.close()
+        log.info("Бот остановлен")
+
+
+async def _run_webhook(
+    *,
+    bot: Bot,
+    dp: Dispatcher,
+    settings: Settings,
+    cerebras_service: CerebrasService | None,
+    db: Database,
+    social_events_background,
+    log: logging.Logger,
+) -> None:
+    @dp.startup()
+    async def _set_webhook(_bot: Bot) -> None:
+        assert settings.webhook_url is not None
+        await _bot.set_webhook(
+            url=settings.webhook_url,
+            secret_token=settings.webhook_secret,
+            drop_pending_updates=True,
+            allowed_updates=dp.resolve_used_update_types(),
+        )
+        log.info("Webhook зарегистрирован в Telegram: %s", settings.webhook_url)
+
+    @dp.shutdown()
+    async def _delete_webhook(_bot: Bot) -> None:
+        await _bot.delete_webhook(drop_pending_updates=False)
+
+    app = web.Application()
+
+    async def health(_request: web.Request) -> web.Response:
+        return web.Response(text="ok")
+
+    app.router.add_get("/", health)
+
+    async def start_events(aio_app: web.Application) -> None:
+        aio_app["events_task"] = asyncio.create_task(social_events_background())
+
+    app.on_startup.append(start_events)
+
+    webhook_handler = SimpleRequestHandler(
+        dispatcher=dp,
+        bot=bot,
+        secret_token=settings.webhook_secret,
+    )
+    webhook_handler.register(app, path=settings.webhook_path)
+
+    setup_application(app, dp, bot=bot)
+
+    async def stop_events(aio_app: web.Application) -> None:
+        t = aio_app.get("events_task")
+        if t:
+            t.cancel()
+            try:
+                await t
+            except asyncio.CancelledError:
+                pass
+
+    app.on_shutdown.append(stop_events)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", settings.webhook_port)
+    await site.start()
+    log.info(
+        "Webhook: HTTP на 0.0.0.0:%s, путь POST %s",
+        settings.webhook_port,
+        settings.webhook_path,
+    )
+    try:
+        halt = asyncio.Event()
+        await halt.wait()
+    finally:
+        await runner.cleanup()
         if cerebras_service is not None:
             await cerebras_service.close()
         await db.close()
