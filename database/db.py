@@ -389,6 +389,38 @@ class Database:
         )
         return [dict(r) for r in rows]
 
+    async def list_events_for_city(
+        self,
+        city_id: int,
+        *,
+        limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        """
+        Все мероприятия города (для админ-просмотра), по дате начала.
+        """
+        pool = self._require_pool()
+        rows = await pool.fetch(
+            """
+            SELECT id, title, description_text, event_kind, starts_at,
+                   venue_name, street_address, source_url
+            FROM events
+            WHERE city_id = $1
+            ORDER BY starts_at ASC NULLS LAST, id ASC
+            LIMIT $2
+            """,
+            city_id,
+            limit,
+        )
+        return [dict(r) for r in rows]
+
+    async def count_events_for_city(self, city_id: int) -> int:
+        pool = self._require_pool()
+        val = await pool.fetchval(
+            "SELECT COUNT(*)::bigint FROM events WHERE city_id = $1",
+            city_id,
+        )
+        return int(val) if val is not None else 0
+
     async def list_recent_cerebras_chat_turns(self, user_id: int, *, limit: int = 24) -> list[dict[str, Any]]:
         pool = self._require_pool()
         rows = await pool.fetch(
