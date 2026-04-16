@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+from typing import Any
 
 import asyncpg
 from aiogram import Router
@@ -14,12 +15,51 @@ from aiogram.types import Message
 from config import load_settings
 from database.db import Database
 from services.cerebras import CerebrasService
+from services.cerebras.prompt_builder import (
+    _format_event_one_line_where,
+    _format_starts_at,
+    _zoneinfo_safe,
+)
 from services.events_ingest import sync_social_events_for_all_links
 from timezone_utils import validate_iana_timezone
 
 logger = logging.getLogger(__name__)
 
 router = Router(name="admin")
+
+# Админ-команда /events_city: сколько мероприятий в одном сообщении Telegram (лимит 4096 симв.)
+_EVENTS_PER_MESSAGE = 5
+_MAX_EVENTS_IN_QUERY = 500
+_DESC_PREVIEW = 120
+
+
+def _format_admin_event_line(
+    event: dict[str, Any],
+    *,
+    index: int,
+    city_tz: str | None,
+) -> str:
+    z = _zoneinfo_safe(city_tz)
+    title = (event.get("title") or "").strip() or "—"
+    eid = event.get("id")
+    when = _format_starts_at(event.get("starts_at"), z)
+    url = (event.get("source_url") or "").strip()
+    kind = (event.get("event_kind") or "").strip()
+    desc = (event.get("description_text") or "").strip()
+    if len(desc) > _DESC_PREVIEW:
+        desc = desc[: _DESC_PREVIEW - 1] + "…"
+    where = _format_event_one_line_where(event)
+
+    head = f"{index}. id={eid} — {title}"
+    second = f"{when} · {url}" if url else when
+    lines = [head, f"   {second}"]
+    if kind:
+        lines.append(f"   тип: {kind}")
+    if desc:
+        lines.append(f"   {desc}")
+    if where:
+        lines.append(f"   где: {where}")
+    return "\n".join(lines)
 
 # Префикс: /add_link или /add_link@BotName
 _ADD_LINK_PREFIX_RE = re.compile(r"^/add_link(?:@\w+)?\s+(\d+)\s+", re.IGNORECASE)
@@ -97,6 +137,7 @@ async def cmd_admin(message: Message, is_admin: bool) -> None:
         "/add_link <id_города> <url> [название] — VK-группа или Telegram-канал "
         "(посты за 2 дня → Cerebras → мероприятия в БД)\n"
         "/links_city <id_города> — список ссылок города\n"
+        "/events_city <id_города> — мероприятия города из БД (по 5 в сообщении)\n"
         "/remove_link <id_ссылки> — удалить ссылку\n"
         "/purge_aggregators — удалить все мероприятия и все ссылки агрегаторов (необратимо)\n"
         "/sync_events — загрузить посты VK/Telegram и отфильтровать мероприятия (Cerebras)\n\n"
@@ -297,6 +338,73 @@ async def cmd_add_link(message: Message, db: Database, is_admin: bool) -> None:
     except Exception:
         logger.exception("add_link")
         await message.answer("Не удалось сохранить ссылку.")
+
+
+@router.message(Command("events_city"))
+async def cmd_events_city(message: Message, db: Database, is_admin: bool) -> None:
+    if not is_admin:
+        await message.answer("Доступ запрещён.")
+        return
+
+    parts = (message.text or "").split()
+    if len(parts) < 2 or not parts[1].isdigit():
+        await message.answer("Формат: /events_city 2", parse_mode=None)
+        return
+
+    city_id = int(parts[1])
+    city = await db.get_city(city_id)
+    if not city:
+        await message.answer("Город не найден.")
+        return
+
+    total = await db.count_events_for_city(city_id)
+    if total == 0:
+        await message.answer(
+            f"В базе нет мероприятий для «{city['name']}» (id={city_id}).",
+            parse_mode=None,
+        )
+        return
+
+    events = await db.list_events_for_city(city_id, limit=_MAX_EVENTS_IN_QUERY)
+    shown = len(events)
+    tz_raw = city.get("timezone")
+    city_tz = (
+        str(tz_raw).strip()
+        if isinstance(tz_raw, str) and tz_raw.strip()
+        else "Europe/Moscow"
+    )
+
+    truncated_note = ""
+    if total > shown:
+        truncated_note = f" Показаны первые {shown} из {total}."
+    else:
+        truncated_note = f" Всего: {total}."
+
+    num_parts = (shown + _EVENTS_PER_MESSAGE - 1) // _EVENTS_PER_MESSAGE
+    for part_i in range(num_parts):
+        start = part_i * _EVENTS_PER_MESSAGE
+        batch = events[start : start + _EVENTS_PER_MESSAGE]
+        lines = [
+            _format_admin_event_line(
+                ev,
+                index=start + j + 1,
+                city_tz=city_tz,
+            )
+            for j, ev in enumerate(batch)
+        ]
+        body = "\n\n".join(lines)
+        if part_i == 0:
+            header = (
+                f"Мероприятия: {city['name']} (id={city_id}).{truncated_note}\n"
+                f"Часть {part_i + 1}/{num_parts}.\n\n"
+            )
+        else:
+            header = (
+                f"{city['name']} (id={city_id}) — продолжение, "
+                f"часть {part_i + 1}/{num_parts}.\n\n"
+            )
+        text = header + body
+        await message.answer(text, parse_mode=None, disable_web_page_preview=True)
 
 
 @router.message(Command("links_city"))
