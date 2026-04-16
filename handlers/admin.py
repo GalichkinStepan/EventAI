@@ -88,20 +88,20 @@ async def cmd_admin(message: Message, is_admin: bool) -> None:
         return
 
     await message.answer(
-        "**Панель администратора**\n\n"
-        "/add\\_city `<IANA>` `<название города>` — добавить город с часовым поясом "
-        "(например: `/add_city Europe/Moscow Москва`)\n"
-        "/set\\_city\\_tz `<id>` `<IANA>` — сменить часовой пояс города\n"
-        "/remove\\_city `<id>` — удалить город\n"
+        "Панель администратора\n\n"
+        "/add_city <IANA> <название города> — добавить город с часовым поясом "
+        "(например: /add_city Europe/Moscow Москва)\n"
+        "/set_city_tz <id> <IANA> — сменить часовой пояс города\n"
+        "/remove_city <id> — удалить город\n"
         "/cities — список городов (id, название, часовой пояс)\n"
-        "/add\\_link `<id_города>` `<url>` `[название]` — VK-группа или Telegram-канал "
+        "/add_link <id_города> <url> [название] — VK-группа или Telegram-канал "
         "(посты за 2 дня → Cerebras → мероприятия в БД)\n"
-        "/links\\_city `<id_города>` — список ссылок города\n"
-        "/remove\\_link `<id_ссылки>` — удалить ссылку\n"
-        "/purge\\_aggregators — удалить **все** мероприятия и **все** ссылки агрегаторов (необратимо)\n"
-        "/sync\\_events — загрузить посты VK/Telegram и отфильтровать мероприятия (Cerebras)\n\n"
-        "Подсказка: id города и ссылок смотрите в /cities и /links\\_city.",
-        parse_mode="Markdown",
+        "/links_city <id_города> — список ссылок города\n"
+        "/remove_link <id_ссылки> — удалить ссылку\n"
+        "/purge_aggregators — удалить все мероприятия и все ссылки агрегаторов (необратимо)\n"
+        "/sync_events — загрузить посты VK/Telegram и отфильтровать мероприятия (Cerebras)\n\n"
+        "Подсказка: id города и ссылок смотрите в /cities и /links_city.",
+        parse_mode=None,
     )
 
 
@@ -129,7 +129,10 @@ async def cmd_sync_events(
     await message.answer("Запускаю загрузку и разбор мероприятий по ссылкам из БД…")
     try:
         n = await sync_social_events_for_all_links(db, cerebras, settings)
-        await message.answer(f"Готово. Сохранено или обновлено записей мероприятий: **{n}**", parse_mode="Markdown")
+        await message.answer(
+            f"Готово. Сохранено или обновлено записей мероприятий: {n}",
+            parse_mode=None,
+        )
     except Exception:
         logger.exception("sync_events")
         await message.answer("Ошибка синхронизации. Подробности в логе бота.")
@@ -145,10 +148,10 @@ async def cmd_add_city(message: Message, db: Database, is_admin: bool) -> None:
     m = re.match(r"^/add_city\s+(\S+)\s+(.+)$", text, re.DOTALL)
     if not m:
         await message.answer(
-            "Формат: `/add_city <IANA> <название города>`\n"
-            "Пример: `/add_city Asia/Novosibirsk Новосибирск`\n"
+            "Формат: /add_city <IANA> <название города>\n"
+            "Пример: /add_city Asia/Novosibirsk Новосибирск\n"
             "Список поясов: https://en.wikipedia.org/wiki/List_of_tz_database_time_zones",
-            parse_mode="Markdown",
+            parse_mode=None,
         )
         return
 
@@ -181,8 +184,8 @@ async def cmd_set_city_tz(message: Message, db: Database, is_admin: bool) -> Non
     parts = (message.text or "").split(maxsplit=2)
     if len(parts) < 3 or not parts[1].isdigit():
         await message.answer(
-            "Формат: `/set_city_tz 2 Europe/Moscow`",
-            parse_mode="Markdown",
+            "Формат: /set_city_tz 2 Europe/Moscow",
+            parse_mode=None,
         )
         return
 
@@ -220,7 +223,7 @@ async def cmd_remove_city(message: Message, db: Database, is_admin: bool) -> Non
 
     parts = (message.text or "").split()
     if len(parts) < 2 or not parts[1].isdigit():
-        await message.answer("Формат: `/remove_city 3`", parse_mode="Markdown")
+        await message.answer("Формат: /remove_city 3", parse_mode=None)
         return
 
     city_id = int(parts[1])
@@ -252,8 +255,8 @@ async def cmd_cities(message: Message, db: Database, is_admin: bool) -> None:
     cities = await db.list_cities()
     if not cities:
         await message.answer(
-            "Список городов пуст. Добавьте: `/add_city Europe/Moscow Название`",
-            parse_mode="Markdown",
+            "Список городов пуст. Добавьте: /add_city Europe/Moscow Название",
+            parse_mode=None,
         )
         return
 
@@ -273,8 +276,8 @@ async def cmd_add_link(message: Message, db: Database, is_admin: bool) -> None:
     parsed = _parse_add_link(message)
     if not parsed:
         await message.answer(
-            "Формат:\n`/add_link 2 https://kudago.com/msk КудаГо`",
-            parse_mode="Markdown",
+            "Формат:\n/add_link 2 https://kudago.com/msk КудаГо",
+            parse_mode=None,
         )
         return
 
@@ -304,7 +307,7 @@ async def cmd_links_city(message: Message, db: Database, is_admin: bool) -> None
 
     parts = (message.text or "").split()
     if len(parts) < 2 or not parts[1].isdigit():
-        await message.answer("Формат: `/links_city 2`", parse_mode="Markdown")
+        await message.answer("Формат: /links_city 2", parse_mode=None)
         return
 
     city_id = int(parts[1])
@@ -360,7 +363,7 @@ async def cmd_remove_link(message: Message, db: Database, is_admin: bool) -> Non
 
     parts = (message.text or "").split()
     if len(parts) < 2 or not parts[1].isdigit():
-        await message.answer("Формат: `/remove_link 5`", parse_mode="Markdown")
+        await message.answer("Формат: /remove_link 5", parse_mode=None)
         return
 
     link_id = int(parts[1])

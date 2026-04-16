@@ -33,10 +33,10 @@ async def cmd_start(
     cities = await db.list_cities()
     if not cities:
         await message.answer(
-            "Регистрация временно недоступна: **список городов пуст**. "
+            "Регистрация временно недоступна: список городов пуст. "
             "Администратор ещё не добавил города. Попробуйте позже.\n\n"
             "Отмена: /cancel",
-            parse_mode="Markdown",
+            parse_mode=None,
         )
         return
 
@@ -44,14 +44,14 @@ async def cmd_start(
     await state.update_data(city_list_page=0)
 
     total_pages = max(1, (len(cities) + 7) // 8)
-    extra = f"\n\nСтраница **1** из **{total_pages}**" if total_pages > 1 else ""
+    extra = f"\n\nСтраница 1 из {total_pages}" if total_pages > 1 else ""
 
     await message.answer(
-        "Привет! Выберите ваш **город** из списка — так мы сможем подбирать мероприятия и ссылки рядом с вами."
+        "Привет! Выберите ваш город из списка — так мы сможем подбирать мероприятия и ссылки рядом с вами."
         f"{extra}\n\n"
         "Отмена: /cancel",
         reply_markup=cities_keyboard(cities, page=0).as_markup(),
-        parse_mode="Markdown",
+        parse_mode=None,
     )
 
 
@@ -63,8 +63,8 @@ async def cmd_id(message: Message) -> None:
     u = message.from_user
     uname = f"@{u.username}" if u.username else "не указан"
     await message.answer(
-        f"Ваш **Telegram ID**: `{u.id}`\n**Username**: {uname}",
-        parse_mode="Markdown",
+        f"Ваш Telegram ID: {u.id}\nUsername: {uname}",
+        parse_mode=None,
     )
 
 
@@ -121,14 +121,14 @@ async def process_city_page(
     page = max(0, min(page, total_pages - 1))
     await state.update_data(city_list_page=page)
 
-    extra = f"\n\nСтраница **{page + 1}** из **{total_pages}**" if total_pages > 1 else ""
+    extra = f"\n\nСтраница {page + 1} из {total_pages}" if total_pages > 1 else ""
     try:
         await callback.message.edit_text(
-            "Привет! Выберите ваш **город** из списка — так мы сможем подбирать мероприятия и ссылки рядом с вами."
+            "Привет! Выберите ваш город из списка — так мы сможем подбирать мероприятия и ссылки рядом с вами."
             f"{extra}\n\n"
             "Отмена: /cancel",
             reply_markup=cities_keyboard(cities, page=page).as_markup(),
-            parse_mode="Markdown",
+            parse_mode=None,
         )
     except Exception:
         logger.exception("Не удалось обновить сообщение с городами")
@@ -164,21 +164,21 @@ async def process_city_pick(
     kb = categories_keyboard(set()).as_markup()
     try:
         await callback.message.edit_text(
-            f"Город: **{city_name}**\n\n"
-            "Выберите **категории мероприятий** (можно несколько). "
+            f"Город: {city_name}\n\n"
+            "Выберите категории мероприятий (можно несколько). "
             "Нажмите на категорию, чтобы отметить, затем «Готово».\n\n"
             "Отмена: /cancel",
             reply_markup=kb,
-            parse_mode="Markdown",
+            parse_mode=None,
         )
     except Exception:
         logger.exception("Не удалось отредактировать сообщение после выбора города")
         await callback.message.answer(
-            f"Город: **{city_name}**\n\n"
-            "Выберите **категории мероприятий** (можно несколько). "
+            f"Город: {city_name}\n\n"
+            "Выберите категории мероприятий (можно несколько). "
             "Нажмите «Готово», когда закончите.",
             reply_markup=kb,
-            parse_mode="Markdown",
+            parse_mode=None,
         )
     await callback.answer()
 
@@ -236,7 +236,7 @@ async def process_category_toggle(
             "Бот ответит в формате диалога, с учётом вашего города и выбранных категорий.\n\n"
             "Ссылки на сайты агрегаторов по городу: /aggregators"
         )
-        await callback.message.edit_text(welcome)
+        await callback.message.edit_text(welcome, parse_mode=None)
         await callback.answer()
         logger.info(
             "Профиль сохранён user_id=%s city_id=%s categories=%s",
