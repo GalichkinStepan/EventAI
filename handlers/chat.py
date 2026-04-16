@@ -6,6 +6,8 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 from aiogram import F, Router
+from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import StateFilter
 from aiogram.types import Message
 
@@ -42,10 +44,17 @@ def _split_reply(text: str) -> list[str]:
     return [text[i : i + _MAX_MESSAGE_LEN] for i in range(0, len(text), _MAX_MESSAGE_LEN)]
 
 
-async def _send_plain_reply(message: Message, text: str) -> None:
-    """Ответ без parse_mode: произвольный текст модели не должен ломать Markdown бота."""
+async def _send_cerebras_reply(message: Message, text: str) -> None:
+    """
+    Ответ модели пользователю: только здесь включается Markdown (Telegram legacy).
+    Если разметка некорректна — тот же фрагмент без parse_mode.
+    """
     for part in _split_reply(text):
-        await message.answer(part, parse_mode=None)
+        try:
+            await message.answer(part, parse_mode=ParseMode.MARKDOWN)
+        except TelegramBadRequest:
+            logger.warning("Ответ Cerebras: Markdown не распарсился, отправляем как текст")
+            await message.answer(part, parse_mode=None)
 
 
 def _is_dialog_recent_within_hours(last_activity_utc: datetime | None, *, hours: int) -> bool:
@@ -183,7 +192,7 @@ async def user_prompt_to_cerebras(
         except Exception:
             logger.exception("Не удалось сохранить показанные мероприятия user_id=%s", user_id)
 
-    await _send_plain_reply(message, reply)
+    await _send_cerebras_reply(message, reply)
     logger.debug(
         "Cerebras ответ user_id=%s city=%s interests=%s",
         user_id,
