@@ -257,6 +257,25 @@ class Database:
         result = await pool.execute("DELETE FROM aggregator_links WHERE id = $1", link_id)
         return result != "DELETE 0"
 
+    async def delete_all_events_and_aggregator_links(self) -> tuple[int, int]:
+        """
+        Удаляет все мероприятия, затем все ссылки агрегаторов.
+        Порядок важен из-за внешних ключей (events → aggregator_links).
+        """
+        pool = self._require_pool()
+
+        def _count(tag: str) -> int:
+            parts = tag.split()
+            if len(parts) >= 2 and parts[0] == "DELETE":
+                return int(parts[1])
+            return 0
+
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                ev_tag = await conn.execute("DELETE FROM events")
+                links_tag = await conn.execute("DELETE FROM aggregator_links")
+                return _count(ev_tag), _count(links_tag)
+
     async def list_aggregators_for_city(self, city_id: int) -> list[dict[str, Any]]:
         pool = self._require_pool()
         rows = await pool.fetch(

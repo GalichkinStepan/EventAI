@@ -38,6 +38,7 @@ async def cmd_admin(message: Message, is_admin: bool) -> None:
         "(посты за 2 дня → Cerebras → мероприятия в БД)\n"
         "/links\\_city `<id_города>` — список ссылок города\n"
         "/remove\\_link `<id_ссылки>` — удалить ссылку\n"
+        "/purge\\_aggregators — удалить **все** мероприятия и **все** ссылки агрегаторов (необратимо)\n"
         "/sync\\_events — загрузить посты VK/Telegram и отфильтровать мероприятия (Cerebras)\n\n"
         "Подсказка: id города и ссылок смотрите в /cities и /links\\_city.",
         parse_mode="Markdown",
@@ -105,10 +106,7 @@ async def cmd_add_city(message: Message, db: Database, is_admin: bool) -> None:
 
     try:
         cid = await db.add_city(name, timezone=tz)
-        await message.answer(
-            f"Город добавлен: **{name}** (id={cid}), часовой пояс: `{tz}`",
-            parse_mode="Markdown",
-        )
+        await message.answer(f"Город добавлен: {name} (id={cid}), часовой пояс: {tz}")
     except Exception:
         logger.exception("add_city")
         await message.answer("Не удалось добавить город.")
@@ -149,10 +147,7 @@ async def cmd_set_city_tz(message: Message, db: Database, is_admin: bool) -> Non
         return
 
     if ok:
-        await message.answer(
-            f"Часовой пояс для **{city['name']}** (id={city_id}): `{tz}`",
-            parse_mode="Markdown",
-        )
+        await message.answer(f"Часовой пояс для {city['name']} (id={city_id}): {tz}")
     else:
         await message.answer("Город не найден.")
 
@@ -203,10 +198,10 @@ async def cmd_cities(message: Message, db: Database, is_admin: bool) -> None:
         return
 
     lines = [
-        f"`{c['id']}` — {c['name']} — `{c.get('timezone', 'Europe/Moscow')}`"
+        f"{c['id']} — {c['name']} — {c.get('timezone', 'Europe/Moscow')}"
         for c in cities
     ]
-    await message.answer("**Города:**\n" + "\n".join(lines), parse_mode="Markdown")
+    await message.answer("Города:\n" + "\n".join(lines))
 
 
 @router.message(Command("add_link"))
@@ -240,8 +235,8 @@ async def cmd_add_link(message: Message, db: Database, is_admin: bool) -> None:
     try:
         lid = await db.add_aggregator_link(city_id, title, url)
         await message.answer(
-            f"Ссылка добавлена (id={lid}) для города **{city['name']}**:\n{title}\n{url}",
-            parse_mode="Markdown",
+            f"Ссылка добавлена (id={lid}) для города {city['name']}:\n{title}\n{url}",
+            disable_web_page_preview=True,
         )
     except Exception:
         logger.exception("add_link")
@@ -270,10 +265,37 @@ async def cmd_links_city(message: Message, db: Database, is_admin: bool) -> None
         await message.answer(f"Для «{city['name']}» пока нет ссылок.")
         return
 
-    lines = [f"`{L['id']}` — {L['title']}\n{L['url']}" for L in links]
+    lines = [f"{L['id']} — {L['title']}\n{L['url']}" for L in links]
     await message.answer(
-        f"Ссылки — **{city['name']}**:\n\n" + "\n\n".join(lines),
-        parse_mode="Markdown",
+        f"Ссылки — {city['name']}:\n\n" + "\n\n".join(lines),
+        disable_web_page_preview=True,
+    )
+
+
+@router.message(Command("purge_aggregators"))
+async def cmd_purge_aggregators(message: Message, db: Database, is_admin: bool) -> None:
+    if not is_admin:
+        await message.answer("Доступ запрещён.")
+        return
+
+    try:
+        n_events, n_links = await db.delete_all_events_and_aggregator_links()
+    except Exception:
+        logger.exception("purge_aggregators")
+        await message.answer("Не удалось выполнить очистку. Подробности в логе бота.")
+        return
+
+    await message.answer(
+        "Очистка выполнена:\n"
+        f"— удалено мероприятий: {n_events}\n"
+        f"— удалено ссылок агрегаторов: {n_links}\n\n"
+        "Города и профили пользователей не затронуты."
+    )
+    logger.info(
+        "purge_aggregators: admin user_id=%s events=%s links=%s",
+        message.from_user.id if message.from_user else None,
+        n_events,
+        n_links,
     )
 
 
