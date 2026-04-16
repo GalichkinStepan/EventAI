@@ -70,7 +70,6 @@ async def main() -> None:
 
     # Без parse_mode по умолчанию: иначе ответы с URL/текстом из БД (подчёркивания и т.д.)
     # ошибочно парсятся как Markdown и дают TelegramBadRequest: can't parse entities.
-    # Ответы Cerebras в handlers/chat.py отправляются отдельно с ParseMode.MARKDOWN и fallback.
     bot = Bot(
         token=settings.bot_token,
         default=DefaultBotProperties(),
