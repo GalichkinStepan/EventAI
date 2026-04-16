@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime
 from typing import Any
 
 import asyncpg
@@ -78,6 +79,29 @@ SCHEMA_STATEMENTS = [
     """,
     """
     ALTER TABLE cities ADD COLUMN IF NOT EXISTS timezone TEXT NOT NULL DEFAULT 'Europe/Moscow';
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS cerebras_chat_turns (
+        id BIGSERIAL PRIMARY KEY,
+        user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+        role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+        content TEXT NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_cerebras_chat_user_id ON cerebras_chat_turns (user_id, id);
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS cerebras_suggested_events (
+        user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+        event_id BIGINT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+        suggested_at TIMESTAMPTZ DEFAULT NOW(),
+        PRIMARY KEY (user_id, event_id)
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_cerebras_suggested_user ON cerebras_suggested_events (user_id);
     """,
 ]
 
@@ -336,6 +360,111 @@ class Database:
             timezone.strip(),
         )
         return [dict(r) for r in rows]
+
+    async def list_events_in_time_range_for_city(
+        self,
+        city_id: int,
+        *,
+        start_utc: datetime,
+        end_utc_exclusive: datetime,
+    ) -> list[dict[str, Any]]:
+        """
+        Мероприятия города с starts_at в [start_utc, end_utc_exclusive) (полуинтервал по UTC).
+        """
+        pool = self._require_pool()
+        rows = await pool.fetch(
+            """
+            SELECT id, title, description_text, event_kind, starts_at,
+                   venue_name, street_address, source_url
+            FROM events
+            WHERE city_id = $1
+              AND starts_at IS NOT NULL
+              AND starts_at >= $2
+              AND starts_at < $3
+            ORDER BY starts_at ASC NULLS LAST
+            """,
+            city_id,
+            start_utc,
+            end_utc_exclusive,
+        )
+        return [dict(r) for r in rows]
+
+    async def list_recent_cerebras_chat_turns(self, user_id: int, *, limit: int = 24) -> list[dict[str, Any]]:
+        pool = self._require_pool()
+        rows = await pool.fetch(
+            """
+            SELECT role, content
+            FROM cerebras_chat_turns
+            WHERE user_id = $1
+            ORDER BY id DESC
+            LIMIT $2
+            """,
+            user_id,
+            limit,
+        )
+        chronological = list(reversed(rows))
+        return [dict(r) for r in chronological]
+
+    async def append_cerebras_exchange(
+        self, user_id: int, user_text: str, assistant_text: str
+    ) -> None:
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    """
+                    INSERT INTO cerebras_chat_turns (user_id, role, content)
+                    VALUES ($1, 'user', $2)
+                    """,
+                    user_id,
+                    user_text,
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO cerebras_chat_turns (user_id, role, content)
+                    VALUES ($1, 'assistant', $2)
+                    """,
+                    user_id,
+                    assistant_text,
+                )
+
+    async def get_last_cerebras_activity_at(self, user_id: int) -> datetime | None:
+        """Время последней реплики в истории Cerebras (user или assistant), UTC."""
+        pool = self._require_pool()
+        row = await pool.fetchrow(
+            """
+            SELECT MAX(created_at) AS ts
+            FROM cerebras_chat_turns
+            WHERE user_id = $1
+            """,
+            user_id,
+        )
+        if row is None or row["ts"] is None:
+            return None
+        return row["ts"]
+
+    async def get_cerebras_suggested_event_ids(self, user_id: int) -> set[int]:
+        pool = self._require_pool()
+        rows = await pool.fetch(
+            "SELECT event_id FROM cerebras_suggested_events WHERE user_id = $1",
+            user_id,
+        )
+        return {int(r["event_id"]) for r in rows}
+
+    async def record_cerebras_suggested_events(self, user_id: int, event_ids: list[int]) -> None:
+        if not event_ids:
+            return
+        pool = self._require_pool()
+        uniq = {int(x) for x in event_ids}
+        async with pool.acquire() as conn:
+            await conn.executemany(
+                """
+                INSERT INTO cerebras_suggested_events (user_id, event_id)
+                VALUES ($1, $2)
+                ON CONFLICT DO NOTHING
+                """,
+                [(user_id, eid) for eid in uniq],
+            )
 
     async def upsert_event(
         self,

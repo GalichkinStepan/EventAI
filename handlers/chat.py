@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta, timezone
 
 from aiogram import F, Router
 from aiogram.filters import StateFilter
@@ -15,9 +16,18 @@ from services.cerebras import (
     CerebrasService,
     build_chat_messages,
 )
+from services.cerebras.prompt_builder import (
+    DIALOG_RECENT_HOURS,
+    EventPromptFormat,
+    next_calendar_month_utc_bounds,
+    select_events_for_cerebras_prompt,
+)
 from states.user_preferences import ProfileSetup
 
 logger = logging.getLogger(__name__)
+
+# Пары user+assistant в истории (лимит сообщений ролей, не байты)
+_MAX_CEREBRAS_HISTORY_MESSAGES = 24
 
 # Лимит Telegram на длину одного сообщения
 _MAX_MESSAGE_LEN = 4096
@@ -36,6 +46,21 @@ async def _send_plain_reply(message: Message, text: str) -> None:
     """Ответ без parse_mode: произвольный текст модели не должен ломать Markdown бота."""
     for part in _split_reply(text):
         await message.answer(part, parse_mode=None)
+
+
+def _is_dialog_recent_within_hours(last_activity_utc: datetime | None, *, hours: int) -> bool:
+    """
+    Активный диалог: нет истории (первое сообщение) или последняя реплика не старше `hours` часов.
+    Время сравниваем в UTC.
+    """
+    if last_activity_utc is None:
+        return True
+    now = datetime.now(timezone.utc)
+    la = last_activity_utc
+    if la.tzinfo is None:
+        la = la.replace(tzinfo=timezone.utc)
+    delta = now - la.astimezone(timezone.utc)
+    return delta <= timedelta(hours=hours)
 
 
 @router.message(
@@ -79,9 +104,23 @@ async def user_prompt_to_cerebras(
         interests = []
 
     agg: list[tuple[str, str]] = []
-    upcoming: list[dict] = []
     city_tz: str | None = None
     cid = row.get("city_id")
+
+    last_activity = await db.get_last_cerebras_activity_at(user_id)
+    suggested_ids = await db.get_cerebras_suggested_event_ids(user_id)
+    dialog_recent = _is_dialog_recent_within_hours(last_activity, hours=DIALOG_RECENT_HOURS)
+
+    history_rows = await db.list_recent_cerebras_chat_turns(
+        user_id, limit=_MAX_CEREBRAS_HISTORY_MESSAGES
+    )
+    history = [(str(r["role"]), str(r["content"])) for r in history_rows]
+
+    event_matching: list[dict] = []
+    event_extra: list[dict] = []
+    event_format: EventPromptFormat = "none"
+    suggested_to_record: list[int] = []
+
     if cid is not None:
         cid_int = int(cid)
         raw_tz = row.get("city_timezone")
@@ -92,18 +131,31 @@ async def user_prompt_to_cerebras(
         )
         for link in await db.list_aggregators_for_city(cid_int):
             agg.append((str(link["title"]), str(link["url"])))
-        upcoming = await db.list_upcoming_events_for_city(
+        start_utc, end_excl = next_calendar_month_utc_bounds(city_tz)
+        upcoming = await db.list_events_in_time_range_for_city(
             cid_int,
-            timezone=city_tz,
+            start_utc=start_utc,
+            end_utc_exclusive=end_excl,
+        )
+        event_matching, event_extra, suggested_to_record, event_format = (
+            select_events_for_cerebras_prompt(
+                upcoming,
+                interests,
+                dialog_recent_within_24h=dialog_recent,
+                suggested_event_ids=suggested_ids,
+            )
         )
 
     messages = build_chat_messages(
         raw,
         city=city,
         interests=interests,
+        history=history,
         aggregator_links=agg or None,
-        upcoming_events=upcoming or None,
         city_timezone=city_tz,
+        event_matching=event_matching,
+        event_extra=event_extra,
+        event_format=event_format,
     )
     try:
         reply = await cerebras.complete(messages)
@@ -119,6 +171,17 @@ async def user_prompt_to_cerebras(
 
     if not reply:
         reply = "Пустой ответ модели."
+
+    try:
+        await db.append_cerebras_exchange(user_id, raw, reply)
+    except Exception:
+        logger.exception("Не удалось сохранить историю диалога Cerebras user_id=%s", user_id)
+
+    if suggested_to_record:
+        try:
+            await db.record_cerebras_suggested_events(user_id, suggested_to_record)
+        except Exception:
+            logger.exception("Не удалось сохранить показанные мероприятия user_id=%s", user_id)
 
     await _send_plain_reply(message, reply)
     logger.debug(
