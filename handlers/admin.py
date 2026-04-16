@@ -7,6 +7,7 @@ import re
 
 import asyncpg
 from aiogram import Router
+from aiogram.enums import MessageEntityType
 from aiogram.filters import Command
 from aiogram.types import Message
 
@@ -19,6 +20,65 @@ from timezone_utils import validate_iana_timezone
 logger = logging.getLogger(__name__)
 
 router = Router(name="admin")
+
+# Префикс: /add_link или /add_link@BotName
+_ADD_LINK_PREFIX_RE = re.compile(r"^/add_link(?:@\w+)?\s+(\d+)\s+", re.IGNORECASE)
+
+
+def _first_http_url_from_entities(message: Message) -> str | None:
+    """
+    Берёт URL как его отдал Telegram (сущности url / text_link).
+    Так в строке сохраняются символы вроде «_», которые в message.text могут
+    пропасть из‑за разметки клиента.
+    """
+    text = message.text or ""
+    for ent in sorted(message.entities or [], key=lambda e: e.offset):
+        if ent.type == MessageEntityType.BOT_COMMAND:
+            continue
+        if ent.type == MessageEntityType.URL:
+            raw = ent.extract_from(text).strip()
+            if raw.lower().startswith(("http://", "https://")):
+                return raw.rstrip(".,;)")
+        if ent.type == MessageEntityType.TEXT_LINK and ent.url:
+            raw = ent.url.strip()
+            if raw.lower().startswith(("http://", "https://")):
+                return raw.rstrip(".,;)")
+    return None
+
+
+def _title_from_add_link_suffix(suffix: str, canonical_url: str) -> str:
+    """Название после URL; если в тексте ссылка «сломана» (без _), отрезаем первый http-токен."""
+    if canonical_url in suffix:
+        rest = suffix.replace(canonical_url, "", 1).strip()
+        return rest if rest else "Агрегатор мероприятий"
+    parts = suffix.split(maxsplit=1)
+    if parts and parts[0].lower().startswith("http"):
+        rest = parts[1].strip() if len(parts) > 1 else ""
+        return rest if rest else "Агрегатор мероприятий"
+    return "Агрегатор мероприятий"
+
+
+def _parse_add_link(message: Message) -> tuple[int, str, str] | None:
+    """
+    Возвращает (city_id, url, title) или None.
+    URL в приоритете из entities; иначе первый https:// в хвосте команды (как в старом regex).
+    """
+    text = (message.text or "").strip()
+    m = _ADD_LINK_PREFIX_RE.match(text)
+    if not m:
+        return None
+    city_id = int(m.group(1))
+    suffix = text[m.end() :].strip()
+
+    url = _first_http_url_from_entities(message)
+    if not url:
+        mm = re.search(r"(https?://\S+)", suffix, re.IGNORECASE)
+        if not mm:
+            return None
+        url = mm.group(1).rstrip(".,;)")
+
+    title = _title_from_add_link_suffix(suffix, url)
+    return city_id, url, title
 
 
 @router.message(Command("admin"))
@@ -210,22 +270,15 @@ async def cmd_add_link(message: Message, db: Database, is_admin: bool) -> None:
         await message.answer("Доступ запрещён.")
         return
 
-    text = (message.text or "").strip()
-    m = re.match(
-        r"/add_link\s+(\d+)\s+(https?://\S+)(?:\s+(.+))?$",
-        text,
-        re.DOTALL | re.IGNORECASE,
-    )
-    if not m:
+    parsed = _parse_add_link(message)
+    if not parsed:
         await message.answer(
             "Формат:\n`/add_link 2 https://kudago.com/msk КудаГо`",
             parse_mode="Markdown",
         )
         return
 
-    city_id = int(m.group(1))
-    url = m.group(2).rstrip(".,;)")
-    title = (m.group(3) or "Агрегатор мероприятий").strip()
+    city_id, url, title = parsed
 
     city = await db.get_city(city_id)
     if not city:
