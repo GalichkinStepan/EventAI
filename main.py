@@ -167,9 +167,9 @@ async def _run_webhook(
     log: logging.Logger,
 ) -> None:
     @dp.startup()
-    async def _set_webhook(_bot: Bot) -> None:
+    async def _set_webhook(bot: Bot) -> None:
         assert settings.webhook_url is not None
-        await _bot.set_webhook(
+        await bot.set_webhook(
             url=settings.webhook_url,
             secret_token=settings.webhook_secret,
             drop_pending_updates=True,
@@ -178,8 +178,8 @@ async def _run_webhook(
         log.info("Webhook зарегистрирован в Telegram: %s", settings.webhook_url)
 
     @dp.shutdown()
-    async def _delete_webhook(_bot: Bot) -> None:
-        await _bot.delete_webhook(drop_pending_updates=False)
+    async def _delete_webhook(bot: Bot) -> None:
+        await bot.delete_webhook(drop_pending_updates=False)
 
     app = web.Application()
 
