@@ -13,6 +13,7 @@ from services.cerebras.event_extraction import (
     build_event_extraction_messages,
     parse_json_array_from_llm,
 )
+from services.event_requirements import has_date_and_place_for_storage
 from services.social.fetch import fetch_posts_for_aggregator_url
 from services.social.models import SocialPost
 
@@ -118,6 +119,13 @@ async def _ingest_one_link(
         ek = item.get("event_kind")
         event_kind = ek.strip() if isinstance(ek, str) and ek.strip() else None
         starts_at = _parse_iso_datetime(item.get("starts_at"))
+
+        if not has_date_and_place_for_storage(starts_at, venue_name, street_address):
+            logger.debug(
+                "Пропуск мероприятия ref=%s: нет даты начала или места (площадка/адрес)",
+                ref,
+            )
+            continue
 
         external_key = f"{link_id}:{ref}"
         if len(external_key) > 2000:
