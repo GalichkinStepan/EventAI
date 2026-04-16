@@ -8,7 +8,6 @@ from logging.handlers import RotatingFileHandler
 from aiohttp import web
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
-from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
@@ -69,9 +68,11 @@ async def main() -> None:
     else:
         log.warning("CEREBRAS_API_KEY не задан — ответы ИИ отключены до настройки .env")
 
+    # Без parse_mode по умолчанию: иначе ответы с URL/текстом из БД (подчёркивания и т.д.)
+    # ошибочно парсятся как Markdown и дают TelegramBadRequest: can't parse entities.
     bot = Bot(
         token=settings.bot_token,
-        default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN),
+        default=DefaultBotProperties(),
     )
     dp = Dispatcher(storage=MemoryStorage())
 
